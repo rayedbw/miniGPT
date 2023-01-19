@@ -79,9 +79,9 @@ def estimate_loss():
 
 # Define bigram model
 class BigramLM(nn.Module):
-    def __init__(self, vocab_size):
+    def __init__(self):
         super().__init__()
-        self.embed = nn.Embedding(vocab_size, vocab_size)
+        self.embed = nn.Embedding(VOCAB_SIZE, VOCAB_SIZE)
 
     def forward(self, input, target=None):
         loss = None
@@ -108,7 +108,7 @@ class BigramLM(nn.Module):
 
 
 # Instantiate model
-model = BigramLM(VOCAB_SIZE)
+model = BigramLM()
 model.to(DEVICE)
 optimizer = torch.optim.AdamW(model.parameters())
 
