@@ -6,12 +6,14 @@ import torch.nn as nn
 from torch.nn import functional as F
 
 # Hyperparams
-BATCH_SIZE = 256
-CONTEXT_LENGTH = 16
-MAX_ITER = int(1e6)
-EVAL_INTERVAL = int(1e5)
-EVAL_ITER = int(1e4)
+BATCH_SIZE = 128
+SEQ_LEN = 16
+MAX_ITER = int(1e5)
+EVAL_INTERVAL = int(1e4)
+EVAL_ITER = int(1e3)
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+EMBED_DIM = 32
+ATTN_OUT = 16
 
 # For reproducibility
 torch.manual_seed(1337)
@@ -54,9 +56,9 @@ val_data = data[n:]
 # Get minibatch of training samples
 def get_batch(split):
     data = train_data if split == "train" else val_data
-    idx = torch.randint(len(data) - CONTEXT_LENGTH, (BATCH_SIZE,))
-    X = torch.stack([data[i : i + CONTEXT_LENGTH] for i in idx])
-    y = torch.stack([data[i + 1 : i + 1 + CONTEXT_LENGTH] for i in idx])
+    idx = torch.randint(len(data) - SEQ_LEN, (BATCH_SIZE,))
+    X = torch.stack([data[i : i + SEQ_LEN] for i in idx])
+    y = torch.stack([data[i + 1 : i + 1 + SEQ_LEN] for i in idx])
     X, y = X.to(DEVICE), y.to(DEVICE)
     return X, y
 
@@ -77,21 +79,57 @@ def estimate_loss():
     return out
 
 
+class SelfAttentionHead(nn.Module):
+    """Self Attention Head"""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.query = nn.Linear(EMBED_DIM, ATTN_OUT, bias=False)
+        self.key = nn.Linear(EMBED_DIM, ATTN_OUT, bias=False)
+        self.value = nn.Linear(EMBED_DIM, ATTN_OUT, bias=False)
+        self.register_buffer("tril", torch.tril(torch.ones((SEQ_LEN, SEQ_LEN))))
+
+    def forward(self, x):
+        B, T, C = x.shape
+
+        q = self.query(x)  # B, T, H
+        k = self.key(x)
+        v = self.value(x)
+
+        attn_weights = (
+            q @ k.transpose(-2, -1) * ATTN_OUT**-0.5
+        )  # B, T, H @ B, H, T --> B, T, T
+        attn_weights = attn_weights.masked_fill(self.tril[:T, :T] == 0, float("-inf"))
+        attn_weights = F.softmax(attn_weights, dim=-1)
+
+        output = attn_weights @ v  # (B, T, T) @ (B, T, H) --> B, T, H
+        return output
+
+
 # Define bigram model
 class BigramLM(nn.Module):
     def __init__(self):
         super().__init__()
-        self.embed = nn.Embedding(VOCAB_SIZE, VOCAB_SIZE)
+        self.token_embedding = nn.Embedding(VOCAB_SIZE, EMBED_DIM)
+        self.positional_embedding = nn.Embedding(SEQ_LEN, EMBED_DIM)
+        self.self_attention_head = SelfAttentionHead()
+        self.linear = nn.Linear(ATTN_OUT, VOCAB_SIZE)
 
     def forward(self, input, target=None):
         loss = None
-        logit = self.embed(input)
+        B, T = input.shape
+
+        token_emb = self.token_embedding(input)  # B, T -> B, T, E
+        pos_emb = self.positional_embedding(torch.arange(T, device=DEVICE))  # T, E
+        x = token_emb + pos_emb  # B, T, E
+        x = self.self_attention_head(x)  # B, T, H
+        logit = self.linear(x)  # B, T, V
 
         if target is None:
             return logit, loss
 
-        B, T, C = logit.shape
-        logit = logit.view(B * T, C)
+        B, T, V = logit.shape
+        logit = logit.view(B * T, V)
         target = target.view(B * T)
         loss = F.cross_entropy(logit, target)
 
@@ -99,7 +137,8 @@ class BigramLM(nn.Module):
 
     def generate(self, input, max_tokens=100):
         for _ in range(max_tokens):
-            logit, _ = self(input)
+            input_cond = input[:, -SEQ_LEN:]
+            logit, _ = self(input_cond)
             logit = logit[:, -1, :]
             prob = F.softmax(logit, dim=1)
             pred = torch.multinomial(prob, num_samples=1)
@@ -126,7 +165,11 @@ for iter in range(MAX_ITER):
         )
 
 # Save model
-torch.save(model.state_dict(), f"./models/bigram-{MAX_ITER}.pt")
+torch.save(model.state_dict(), f"./models/bigram-{MAX_ITER}-attn.pt")
+
+# model = BigramLM()
+# model.load_state_dict(torch.load("./models/bigram-10000-attn.pt"))
+# model.to(DEVICE)
 
 # Generate shakespeare
 context = torch.zeros((1, 1), dtype=torch.long, device=DEVICE)
