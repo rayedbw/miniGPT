@@ -169,7 +169,7 @@ class Block(nn.Module):
 
 
 # Define bigram model
-class BigramLM(nn.Module):
+class TransformerDecoder(nn.Module):
     def __init__(self):
         super().__init__()
         self.token_embed = nn.Embedding(VOCAB_SIZE, EMBED_DIM)
@@ -213,7 +213,7 @@ class BigramLM(nn.Module):
 
 
 # Instantiate model
-model = BigramLM()
+model = TransformerDecoder()
 model.to(DEVICE)
 optimizer = torch.optim.AdamW(model.parameters())
 
