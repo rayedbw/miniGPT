@@ -82,58 +82,47 @@ def estimate_loss():
     return out
 
 
-class SelfAttentionHead(nn.Module):
-    """Self Attention Head"""
-
-    def __init__(self, head_dim) -> None:
-        super().__init__()
-        self.head_dim = head_dim
-        self.query = nn.Linear(EMBED_DIM, head_dim, bias=False)
-        self.key = nn.Linear(EMBED_DIM, head_dim, bias=False)
-        self.value = nn.Linear(EMBED_DIM, head_dim, bias=False)
-        self.register_buffer("tril", torch.tril(torch.ones((SEQ_LEN, SEQ_LEN))))
-        self.dropout = nn.Dropout()
-
-    def forward(self, x):
-        _, T, _ = x.shape
-
-        q = self.query(x)  # B, T, H
-        k = self.key(x)
-        v = self.value(x)
-
-        allignment_scores = (
-            q @ k.transpose(-2, -1) * self.head_dim**-0.5
-        )  # B, T, H @ B, H, T --> B, T, T
-        allignment_scores_masked = allignment_scores.masked_fill(
-            self.tril[:T, :T] == 0, float("-inf")
-        )  # T because seq_len changes during inference
-        attn_weights = F.softmax(allignment_scores_masked, dim=-1)
-        attn_weights = self.dropout(attn_weights)
-        attn_output = attn_weights @ v  # (B, T, T) @ (B, T, H) --> B, T, H
-
-        return attn_output
-
-
 class MultiHeadAttention(nn.Module):
     """Multi headed self attention"""
 
     def __init__(self, embed_dim, num_heads) -> None:
         super().__init__()
-        head_dim = embed_dim // num_heads
+        self.embed_dim = embed_dim
+        self.num_heads = num_heads
         assert (
-            head_dim * num_heads == embed_dim
+            self.embed_dim % self.num_heads == 0
         ), "embed_dim must be divisible by num_heads"
-        self.heads = nn.ModuleList(
-            [SelfAttentionHead(head_dim) for _ in range(num_heads)]
-        )
+        self.qkv = nn.Linear(embed_dim, 3 * embed_dim)
         self.linear = nn.Linear(embed_dim, embed_dim)
         self.dropout = nn.Dropout()
+        self.register_buffer(
+            "tril",
+            torch.tril(torch.ones((SEQ_LEN, SEQ_LEN))).view(1, 1, SEQ_LEN, SEQ_LEN),
+        )
 
     def forward(self, x):
-        x = torch.concat([head(x) for head in self.heads], dim=-1)
-        x = self.linear(x)
-        x = self.dropout(x)
-        return x
+        B, T, C = x.shape
+
+        q, k, v = self.qkv(x).split(self.embed_dim, dim=2)
+        q = q.view(B, T, self.num_heads, self.embed_dim // self.num_heads).transpose(
+            1, 2
+        )  # B, H, T, Eh
+        k = k.view(B, T, self.num_heads, self.embed_dim // self.num_heads).transpose(
+            1, 2
+        )  # B, H, T, Eh
+        v = v.view(B, T, self.num_heads, self.embed_dim // self.num_heads).transpose(
+            1, 2
+        )  # B, H, T, Eh
+
+        scores = q @ k.transpose(-2, -1) * k.shape[-1] ** -0.5  # B, H, T, T
+        scores_masked = scores.masked_fill(self.tril[:, :, :T, :T] == 0, float("-inf"))
+        weights = self.dropout(F.softmax(scores_masked, dim=-1))  # B, H, T, T
+
+        y = weights @ v  # B, H, T, Eh
+        y = y.transpose(1, 2).contiguous().view(B, T, -1)  # B, T, E
+        y = self.dropout(self.linear(y))
+
+        return y
 
 
 class FeedForwardNetwork(nn.Module):
@@ -201,7 +190,9 @@ class TransformerDecoder(nn.Module):
 
         return logit, loss
 
+    @torch.no_grad()
     def generate(self, input, max_tokens=1000):
+        self.eval()
         for _ in range(max_tokens):
             input_cond = input[:, -SEQ_LEN:]
             logit, _ = self(input_cond)
@@ -209,6 +200,7 @@ class TransformerDecoder(nn.Module):
             prob = F.softmax(logit, dim=1)
             pred = torch.multinomial(prob, num_samples=1)
             input = torch.concatenate((input, pred), dim=1)
+        self.train()
         return input
 
 
