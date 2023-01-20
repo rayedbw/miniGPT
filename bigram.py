@@ -6,11 +6,11 @@ import torch.nn as nn
 from torch.nn import functional as F
 
 # Hyperparams
-BATCH_SIZE = 128
+BATCH_SIZE = 64
 SEQ_LEN = 256
-MAX_ITER = int(1e5)
-EVAL_INTERVAL = int(1e4)
-EVAL_ITER = int(1e3)
+MAX_ITER = 5000
+EVAL_INTERVAL = 500
+EVAL_ITER = 200
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 EMBED_DIM = 512
 NUM_HEADS = 8
